@@ -317,4 +317,58 @@ export const gameService = {
 
     return { result, winnerId };
   },
+
+  async resignGame(gameId: string, resigningUserId: string): Promise<{ result: 'WHITE_WIN' | 'BLACK_WIN'; winnerId: string; resignedColor: 'white' | 'black' } | null> {
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+    });
+
+    if (!game || game.status !== 'IN_PROGRESS') {
+      return null;
+    }
+
+    const isWhite = game.whitePlayerId === resigningUserId;
+    const isBlack = game.blackPlayerId === resigningUserId;
+
+    if (!isWhite && !isBlack) {
+      return null;
+    }
+
+    const result = isWhite ? 'BLACK_WIN' : 'WHITE_WIN';
+    const winnerId = isWhite ? game.blackPlayerId! : game.whitePlayerId!;
+    const resignedColor = isWhite ? 'white' : 'black';
+
+    await prisma.game.update({
+      where: { id: gameId },
+      data: {
+        status: 'COMPLETED',
+        result,
+        winnerId,
+        endedAt: new Date(),
+      },
+    });
+
+    return { result, winnerId, resignedColor };
+  },
+
+  async endGameAsDraw(gameId: string): Promise<boolean> {
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+    });
+
+    if (!game || game.status !== 'IN_PROGRESS') {
+      return false;
+    }
+
+    await prisma.game.update({
+      where: { id: gameId },
+      data: {
+        status: 'COMPLETED',
+        result: 'DRAW',
+        endedAt: new Date(),
+      },
+    });
+
+    return true;
+  },
 };

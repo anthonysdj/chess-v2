@@ -1,11 +1,14 @@
 import { Server, Socket } from 'socket.io';
 import { gameService } from '../services/gameService';
 
-// Track active game connections: gameId -> { odifiedwhiteSocketId, blackSocketId }
+// Track active game connections: gameId -> { whiteSocketId, blackSocketId }
 const gameConnections = new Map<string, { white?: string; black?: string }>();
 
 // Track disconnection timers: `${gameId}:${color}` -> timeout
 const disconnectTimers = new Map<string, NodeJS.Timeout>();
+
+// Track pending draw offers: gameId -> color that offered
+const pendingDrawOffers = new Map<string, 'white' | 'black'>();
 
 // Reconnection timeout in milliseconds (1 minute)
 const RECONNECT_TIMEOUT = 60 * 1000;
@@ -77,11 +80,138 @@ export function setupGameHandlers(io: Server, socket: Socket) {
 
   // Player leaves a game room (navigating away, not disconnect)
   socket.on('game:leave', () => {
-    handlePlayerLeave(io, socket);
+    handlePlayerLeave(socket);
+  });
+
+  // Player resigns
+  socket.on('game:resign', async () => {
+    const { gameId, userId, color } = socket.data;
+
+    if (!gameId || !userId || !color) {
+      socket.emit('game:error', { message: 'Not in a game' });
+      return;
+    }
+
+    try {
+      const result = await gameService.resignGame(gameId, userId);
+
+      if (result) {
+        // Clear any pending draw offer
+        pendingDrawOffers.delete(gameId);
+
+        // Notify both players
+        io.to(`game:${gameId}`).emit(`game:${gameId}:ended`, {
+          result: result.result,
+          reason: 'resignation',
+          resignedColor: result.resignedColor,
+        });
+
+        // Cleanup
+        gameConnections.delete(gameId);
+      }
+    } catch (error) {
+      console.error('Error resigning game:', error);
+      socket.emit('game:error', { message: 'Failed to resign' });
+    }
+  });
+
+  // Player offers a draw
+  socket.on('game:offerDraw', () => {
+    const { gameId, color } = socket.data;
+
+    if (!gameId || !color) {
+      socket.emit('game:error', { message: 'Not in a game' });
+      return;
+    }
+
+    // Check if there's already a pending offer from opponent
+    const existingOffer = pendingDrawOffers.get(gameId);
+
+    if (existingOffer && existingOffer !== color) {
+      // Both players have offered - accept the draw
+      acceptDraw(io, gameId);
+    } else {
+      // Store the offer and notify opponent
+      pendingDrawOffers.set(gameId, color as 'white' | 'black');
+      socket.to(`game:${gameId}`).emit('game:drawOffered', { offeredBy: color });
+      socket.emit('game:drawOfferSent');
+    }
+  });
+
+  // Player accepts a draw offer
+  socket.on('game:acceptDraw', () => {
+    const { gameId, color } = socket.data;
+
+    if (!gameId || !color) {
+      socket.emit('game:error', { message: 'Not in a game' });
+      return;
+    }
+
+    // Verify there's a pending offer from the opponent
+    const existingOffer = pendingDrawOffers.get(gameId);
+
+    if (existingOffer && existingOffer !== color) {
+      acceptDraw(io, gameId);
+    } else {
+      socket.emit('game:error', { message: 'No draw offer to accept' });
+    }
+  });
+
+  // Player declines a draw offer
+  socket.on('game:declineDraw', () => {
+    const { gameId, color } = socket.data;
+
+    if (!gameId || !color) {
+      socket.emit('game:error', { message: 'Not in a game' });
+      return;
+    }
+
+    // Clear the pending offer
+    const existingOffer = pendingDrawOffers.get(gameId);
+
+    if (existingOffer && existingOffer !== color) {
+      pendingDrawOffers.delete(gameId);
+      socket.to(`game:${gameId}`).emit('game:drawDeclined', { declinedBy: color });
+      socket.emit('game:drawOfferDeclined');
+    }
+  });
+
+  // Player cancels their own draw offer
+  socket.on('game:cancelDrawOffer', () => {
+    const { gameId, color } = socket.data;
+
+    if (!gameId || !color) return;
+
+    const existingOffer = pendingDrawOffers.get(gameId);
+
+    if (existingOffer === color) {
+      pendingDrawOffers.delete(gameId);
+      socket.to(`game:${gameId}`).emit('game:drawOfferCancelled');
+      socket.emit('game:drawOfferCancelledConfirm');
+    }
   });
 }
 
-function handlePlayerLeave(io: Server, socket: Socket) {
+async function acceptDraw(io: Server, gameId: string) {
+  try {
+    const success = await gameService.endGameAsDraw(gameId);
+
+    if (success) {
+      pendingDrawOffers.delete(gameId);
+
+      io.to(`game:${gameId}`).emit(`game:${gameId}:ended`, {
+        result: 'DRAW',
+        reason: 'agreement',
+      });
+
+      gameConnections.delete(gameId);
+    }
+  } catch (error) {
+    console.error('Error accepting draw:', error);
+  }
+}
+
+function handlePlayerLeave(socket: Socket) {
   const { gameId, color } = socket.data;
 
   if (!gameId || !color) return;
