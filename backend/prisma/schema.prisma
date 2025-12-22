@@ -1,0 +1,76 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String   @id @default(uuid())
+  username  String   @unique
+  email     String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Game relations (for future use)
+  createdGames  Game[] @relation("GameCreator")
+  gamesAsWhite  Game[] @relation("WhitePlayer")
+  gamesAsBlack  Game[] @relation("BlackPlayer")
+  wonGames      Game[] @relation("GameWinner")
+
+  // Stats relation
+  stats PlayerStats?
+}
+
+model Game {
+  id          String     @id @default(uuid())
+  status      GameStatus @default(WAITING)
+  timeControl Int?       // Time per turn in seconds (60, 180, 300, or null for no limit)
+  result      GameResult?
+  pgn         String?    // Game moves in PGN format
+  startedAt   DateTime?
+  endedAt     DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  // Relations
+  creatorId     String
+  creator       User    @relation("GameCreator", fields: [creatorId], references: [id])
+
+  whitePlayerId String?
+  whitePlayer   User?   @relation("WhitePlayer", fields: [whitePlayerId], references: [id])
+
+  blackPlayerId String?
+  blackPlayer   User?   @relation("BlackPlayer", fields: [blackPlayerId], references: [id])
+
+  winnerId      String?
+  winner        User?   @relation("GameWinner", fields: [winnerId], references: [id])
+}
+
+model PlayerStats {
+  id                   String   @id @default(uuid())
+  wins                 Int      @default(0)
+  losses               Int      @default(0)
+  draws                Int      @default(0)
+  totalPlayTimeSeconds Int      @default(0)
+  updatedAt            DateTime @updatedAt
+
+  // Relation
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id])
+}
+
+enum GameStatus {
+  WAITING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum GameResult {
+  WHITE_WIN
+  BLACK_WIN
+  DRAW
+}
