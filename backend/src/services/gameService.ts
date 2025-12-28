@@ -371,4 +371,11 @@ export const gameService = {
 
     return true;
   },
+
+  async updateGamePgn(gameId: string, pgn: string): Promise<void> {
+    await prisma.game.update({
+      where: { id: gameId },
+      data: { pgn },
+    });
+  },
 };

@@ -190,6 +190,35 @@ export function setupGameHandlers(io: Server, socket: Socket) {
       socket.emit('game:drawOfferCancelledConfirm');
     }
   });
+
+  // Player makes a move
+  socket.on('game:move', async (data: { gameId: string; from: string; to: string; promotion?: string; fen: string; pgn: string }) => {
+    const { gameId, color } = socket.data;
+
+    if (!gameId || !color) {
+      socket.emit('game:error', { message: 'Not in a game' });
+      return;
+    }
+
+    try {
+      // Save the game state to database
+      await gameService.updateGamePgn(data.gameId, data.pgn);
+
+      // Broadcast move to opponent
+      socket.to(`game:${gameId}`).emit('game:move', {
+        from: data.from,
+        to: data.to,
+        promotion: data.promotion,
+        fen: data.fen,
+        pgn: data.pgn,
+      });
+
+      console.log(`Move in game ${gameId}: ${data.from} -> ${data.to}`);
+    } catch (error) {
+      console.error('Error processing move:', error);
+      socket.emit('game:error', { message: 'Failed to process move' });
+    }
+  });
 }
 
 async function acceptDraw(io: Server, gameId: string) {
