@@ -4,6 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  // Note: In Prisma 7, the database URL is configured in prisma.config.ts, not here
 }
 
 model User {
@@ -27,13 +28,18 @@ model User {
 model Game {
   id          String     @id @default(uuid())
   status      GameStatus @default(WAITING)
-  timeControl Int?       // Time per turn in seconds (60, 180, 300, or null for no limit)
+  timeControl Int?       // Time per player in seconds (60, 180, 300, or null for no limit)
   result      GameResult?
   pgn         String?    // Game moves in PGN format
   startedAt   DateTime?
   endedAt     DateTime?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
+
+  // Timer tracking
+  whiteTimeRemaining Int?      // Remaining time for white in seconds
+  blackTimeRemaining Int?      // Remaining time for black in seconds
+  lastMoveAt         DateTime? // When the last move was made (for calculating elapsed time)
 
   // Relations
   creatorId     String

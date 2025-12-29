@@ -13,6 +13,10 @@ export interface GameWithPlayers {
   createdAt: Date;
   whitePlayerId: string | null;
   blackPlayerId: string | null;
+  whiteTimeRemaining: number | null;
+  blackTimeRemaining: number | null;
+  lastMoveAt: Date | null;
+  pgn: string | null;
   creator: {
     id: string;
     username: string;
@@ -130,6 +134,7 @@ export const gameService = {
 
     // Randomly assign colors
     const creatorIsWhite = Math.random() < 0.5;
+    const now = new Date();
 
     const updatedGame = await prisma.game.update({
       where: { id: gameId },
@@ -137,7 +142,11 @@ export const gameService = {
         status: 'IN_PROGRESS',
         whitePlayerId: creatorIsWhite ? game.creatorId : playerId,
         blackPlayerId: creatorIsWhite ? playerId : game.creatorId,
-        startedAt: new Date(),
+        startedAt: now,
+        // Initialize timers if time control is set
+        whiteTimeRemaining: game.timeControl,
+        blackTimeRemaining: game.timeControl,
+        lastMoveAt: now, // Start tracking from game start
       },
       include: {
         creator: {
@@ -377,5 +386,117 @@ export const gameService = {
       where: { id: gameId },
       data: { pgn },
     });
+  },
+
+  async updateGameAfterMove(
+    gameId: string,
+    pgn: string,
+    movingColor: 'white' | 'black'
+  ): Promise<{ whiteTimeRemaining: number | null; blackTimeRemaining: number | null }> {
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+    });
+
+    if (!game || game.status !== 'IN_PROGRESS') {
+      throw new Error('Game not found or not in progress');
+    }
+
+    const now = new Date();
+    let whiteTime = game.whiteTimeRemaining;
+    let blackTime = game.blackTimeRemaining;
+
+    // Calculate elapsed time since last move and deduct from moving player
+    if (game.lastMoveAt && game.timeControl) {
+      const elapsedSeconds = Math.floor((now.getTime() - game.lastMoveAt.getTime()) / 1000);
+
+      if (movingColor === 'white' && whiteTime !== null) {
+        whiteTime = Math.max(0, whiteTime - elapsedSeconds);
+      } else if (movingColor === 'black' && blackTime !== null) {
+        blackTime = Math.max(0, blackTime - elapsedSeconds);
+      }
+    }
+
+    await prisma.game.update({
+      where: { id: gameId },
+      data: {
+        pgn,
+        whiteTimeRemaining: whiteTime,
+        blackTimeRemaining: blackTime,
+        lastMoveAt: now,
+      },
+    });
+
+    return { whiteTimeRemaining: whiteTime, blackTimeRemaining: blackTime };
+  },
+
+  async getGameTimers(gameId: string): Promise<{
+    whiteTimeRemaining: number | null;
+    blackTimeRemaining: number | null;
+    currentTurn: 'white' | 'black';
+  } | null> {
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+    });
+
+    if (!game || game.status !== 'IN_PROGRESS') {
+      return null;
+    }
+
+    let whiteTime = game.whiteTimeRemaining;
+    let blackTime = game.blackTimeRemaining;
+
+    // Calculate current time accounting for ongoing turn
+    if (game.lastMoveAt && game.timeControl) {
+      const now = new Date();
+      const elapsedSeconds = Math.floor((now.getTime() - game.lastMoveAt.getTime()) / 1000);
+
+      // Determine whose turn it is based on PGN (count moves)
+      // If no moves or even number of half-moves, it's white's turn
+      const moveCount = game.pgn ? (game.pgn.match(/\d+\./g) || []).length * 2 - (game.pgn.trim().split(' ').length % 2 === 0 ? 0 : 1) : 0;
+      const isWhiteTurn = moveCount % 2 === 0;
+
+      if (isWhiteTurn && whiteTime !== null) {
+        whiteTime = Math.max(0, whiteTime - elapsedSeconds);
+      } else if (!isWhiteTurn && blackTime !== null) {
+        blackTime = Math.max(0, blackTime - elapsedSeconds);
+      }
+
+      return {
+        whiteTimeRemaining: whiteTime,
+        blackTimeRemaining: blackTime,
+        currentTurn: isWhiteTurn ? 'white' : 'black',
+      };
+    }
+
+    return {
+      whiteTimeRemaining: whiteTime,
+      blackTimeRemaining: blackTime,
+      currentTurn: 'white', // Default to white if no moves yet
+    };
+  },
+
+  async handleTimeOut(gameId: string, timedOutColor: 'white' | 'black'): Promise<{ result: 'WHITE_WIN' | 'BLACK_WIN'; winnerId: string } | null> {
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+    });
+
+    if (!game || game.status !== 'IN_PROGRESS') {
+      return null;
+    }
+
+    const result = timedOutColor === 'white' ? 'BLACK_WIN' : 'WHITE_WIN';
+    const winnerId = timedOutColor === 'white' ? game.blackPlayerId! : game.whitePlayerId!;
+
+    await prisma.game.update({
+      where: { id: gameId },
+      data: {
+        status: 'COMPLETED',
+        result,
+        winnerId,
+        endedAt: new Date(),
+      },
+    });
+
+    return { result, winnerId };
   },
 };

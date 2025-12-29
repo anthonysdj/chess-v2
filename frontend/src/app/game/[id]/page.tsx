@@ -115,7 +115,10 @@ export default function GamePage() {
         setWhiteTime(prev => {
           if (prev === null) return null;
           if (prev <= 1) {
-            // Time's up - will be handled by server
+            // Time's up - report to server
+            if (socket && isConnected) {
+              socket.emit('game:timeout', { timedOutColor: 'white' });
+            }
             return 0;
           }
           return prev - 1;
@@ -124,6 +127,10 @@ export default function GamePage() {
         setBlackTime(prev => {
           if (prev === null) return null;
           if (prev <= 1) {
+            // Time's up - report to server
+            if (socket && isConnected) {
+              socket.emit('game:timeout', { timedOutColor: 'black' });
+            }
             return 0;
           }
           return prev - 1;
@@ -136,7 +143,7 @@ export default function GamePage() {
         clearInterval(turnTimerRef.current);
       }
     };
-  }, [isWhiteTurn, game?.timeControl, gameEnded]);
+  }, [isWhiteTurn, game?.timeControl, gameEnded, socket, isConnected]);
 
   // Join game room and set up socket listeners
   useEffect(() => {
@@ -145,20 +152,60 @@ export default function GamePage() {
     // Join the game room
     socket.emit('game:join', { gameId, userId: user.id });
 
+    // Listen for game joined (with synced timer info)
+    const handleJoined = (data: {
+      color: string;
+      gameId: string;
+      whiteTimeRemaining: number | null;
+      blackTimeRemaining: number | null;
+      pgn: string;
+    }) => {
+      // Sync timers from server
+      if (data.whiteTimeRemaining !== null) {
+        setWhiteTime(data.whiteTimeRemaining);
+      }
+      if (data.blackTimeRemaining !== null) {
+        setBlackTime(data.blackTimeRemaining);
+      }
+      // Load game state from PGN if any
+      if (data.pgn) {
+        chess.loadPgn(data.pgn);
+        setChessUpdate(prev => prev + 1);
+      }
+    };
+
     // Listen for moves from opponent
-    const handleMove = (data: { from: string; to: string; promotion?: string; fen: string; pgn: string }) => {
+    const handleMove = (data: {
+      from: string;
+      to: string;
+      promotion?: string;
+      fen: string;
+      pgn: string;
+      whiteTimeRemaining?: number | null;
+      blackTimeRemaining?: number | null;
+    }) => {
       chess.load(data.fen);
       setChessUpdate(prev => prev + 1);
 
-      // Reset timer for the player who just moved
-      if (game.timeControl) {
-        if (chess.turn() === 'w') {
-          // Black just moved, reset black's timer
-          setBlackTime(game.timeControl);
-        } else {
-          // White just moved, reset white's timer
-          setWhiteTime(game.timeControl);
-        }
+      // Sync timers from server
+      if (data.whiteTimeRemaining !== undefined && data.whiteTimeRemaining !== null) {
+        setWhiteTime(data.whiteTimeRemaining);
+      }
+      if (data.blackTimeRemaining !== undefined && data.blackTimeRemaining !== null) {
+        setBlackTime(data.blackTimeRemaining);
+      }
+    };
+
+    // Listen for timer sync (after own move)
+    const handleTimerSync = (data: {
+      whiteTimeRemaining: number | null;
+      blackTimeRemaining: number | null;
+    }) => {
+      if (data.whiteTimeRemaining !== null) {
+        setWhiteTime(data.whiteTimeRemaining);
+      }
+      if (data.blackTimeRemaining !== null) {
+        setBlackTime(data.blackTimeRemaining);
       }
     };
 
@@ -221,7 +268,9 @@ export default function GamePage() {
     const handleDrawDeclined = () => setDrawOfferState('none');
     const handleDrawOfferCancelled = () => setDrawOfferState('none');
 
+    socket.on('game:joined', handleJoined);
     socket.on('game:move', handleMove);
+    socket.on('game:timerSync', handleTimerSync);
     socket.on(`game:${gameId}:ended`, handleGameEnded);
     socket.on('game:playerDisconnected', handlePlayerDisconnected);
     socket.on('game:playerReconnected', handlePlayerReconnected);
@@ -234,7 +283,9 @@ export default function GamePage() {
 
     return () => {
       socket.emit('game:leave');
+      socket.off('game:joined', handleJoined);
       socket.off('game:move', handleMove);
+      socket.off('game:timerSync', handleTimerSync);
       socket.off(`game:${gameId}:ended`, handleGameEnded);
       socket.off('game:playerDisconnected', handlePlayerDisconnected);
       socket.off('game:playerReconnected', handlePlayerReconnected);
@@ -265,16 +316,7 @@ export default function GamePage() {
       if (move) {
         setChessUpdate(prev => prev + 1);
 
-        // Reset my timer
-        if (game?.timeControl) {
-          if (isWhite) {
-            setWhiteTime(game.timeControl);
-          } else {
-            setBlackTime(game.timeControl);
-          }
-        }
-
-        // Send move to server
+        // Send move to server (timers will be synced via game:timerSync event)
         socket.emit('game:move', {
           gameId,
           from,
@@ -287,7 +329,7 @@ export default function GamePage() {
     } catch (e) {
       console.error('Invalid move:', e);
     }
-  }, [socket, isConnected, gameEnded, chess, game?.timeControl, isWhite, gameId]);
+  }, [socket, isConnected, gameEnded, chess, gameId]);
 
   // Game action handlers
   const handleResign = useCallback(() => {

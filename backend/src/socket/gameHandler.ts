@@ -65,8 +65,17 @@ export function setupGameHandlers(io: Server, socket: Socket) {
         socket.to(`game:${gameId}`).emit('game:playerReconnected', { color });
       }
 
-      // Notify that player has joined
-      socket.emit('game:joined', { color, gameId });
+      // Get current timer state
+      const timerState = await gameService.getGameTimers(gameId);
+
+      // Notify that player has joined with timer info
+      socket.emit('game:joined', {
+        color,
+        gameId,
+        whiteTimeRemaining: timerState?.whiteTimeRemaining ?? null,
+        blackTimeRemaining: timerState?.blackTimeRemaining ?? null,
+        pgn: game.pgn ?? '',
+      });
 
       // Notify opponent if they're connected
       socket.to(`game:${gameId}`).emit('game:playerConnected', { color });
@@ -201,22 +210,62 @@ export function setupGameHandlers(io: Server, socket: Socket) {
     }
 
     try {
-      // Save the game state to database
-      await gameService.updateGamePgn(data.gameId, data.pgn);
+      // Save the game state and update timers
+      const timerUpdate = await gameService.updateGameAfterMove(
+        data.gameId,
+        data.pgn,
+        color as 'white' | 'black'
+      );
 
-      // Broadcast move to opponent
+      // Broadcast move to opponent with updated timer info
       socket.to(`game:${gameId}`).emit('game:move', {
         from: data.from,
         to: data.to,
         promotion: data.promotion,
         fen: data.fen,
         pgn: data.pgn,
+        whiteTimeRemaining: timerUpdate.whiteTimeRemaining,
+        blackTimeRemaining: timerUpdate.blackTimeRemaining,
+      });
+
+      // Also send timer update to the player who made the move
+      socket.emit('game:timerSync', {
+        whiteTimeRemaining: timerUpdate.whiteTimeRemaining,
+        blackTimeRemaining: timerUpdate.blackTimeRemaining,
       });
 
       console.log(`Move in game ${gameId}: ${data.from} -> ${data.to}`);
     } catch (error) {
       console.error('Error processing move:', error);
       socket.emit('game:error', { message: 'Failed to process move' });
+    }
+  });
+
+  // Player reports timeout
+  socket.on('game:timeout', async (data: { timedOutColor: 'white' | 'black' }) => {
+    const { gameId } = socket.data;
+
+    if (!gameId) {
+      socket.emit('game:error', { message: 'Not in a game' });
+      return;
+    }
+
+    try {
+      const result = await gameService.handleTimeOut(gameId, data.timedOutColor);
+
+      if (result) {
+        // Notify both players
+        io.to(`game:${gameId}`).emit(`game:${gameId}:ended`, {
+          result: result.result,
+          reason: 'timeout',
+          timedOutColor: data.timedOutColor,
+        });
+
+        // Cleanup
+        gameConnections.delete(gameId);
+      }
+    } catch (error) {
+      console.error('Error handling timeout:', error);
     }
   });
 }
